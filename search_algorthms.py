@@ -2,14 +2,16 @@ from collections import deque, defaultdict
 import heapq
 from typing import List, Tuple, Dict, Set
 import time
-
-
+#nodes - nodeID coordinatuud (lat, lon)
+#edges = (node1, node2) weight jin ni zai
+#adjacency_list = node_id hurshuud bolon irmegiin jin
+#nodes & edges graph deer zam haih algorithmuudiig ajilluuldag
 class SearchAlgorithms:
+    #graph_builder object avdag
     def __init__(self, graph_builder):
         self.graph = graph_builder
-
+#start->end hurtel hamgiin tsuun alhamaar ochih zamiig oldog
     def bfs_shortest_path(self, start: int, end: int) -> Tuple[List[int], float, Dict]:
-        """BFS - Хамгийн цөөн алхам"""
         start_time = time.time()
 
         if start not in self.graph.adjacency_list or end not in self.graph.adjacency_list:
