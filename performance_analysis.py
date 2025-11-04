@@ -70,6 +70,7 @@ class PerformanceAnalyzer:
             ax3.bar(algorithms, distances, color=['blue', 'green', 'red'])
             ax3.set_title('Дундаж зай')
             ax3.set_ylabel('Зай (метр)')
+            ax3.set_ylabel('Зай (метр)')
 
         # Олдсон замын тоо
         ax4.bar(['DFS'], [np.mean(results['DFS']['paths_found'])])
