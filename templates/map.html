@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>OSM Path Finder - Улаанбаатар</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <style>
+        html, body, #map { height: 100%; margin: 0; padding: 0; }
+        .panel {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(255,255,255,0.95);
+            padding: 15px; border-radius: 10px;
+            font-family: Arial; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            z-index: 1000;
+            max-width: 300px;
+        }
+        button {
+            margin: 4px; padding: 8px 12px; border: none; border-radius: 6px;
+            cursor: pointer; font-weight: bold; width: 100%;
+        }
+        .dijkstra { background: #ff6b6b; color: white; }
+        .bfs { background: #4dabf7; color: white; }
+        .dfs { background: #51cf66; color: white; }
+        .reset { background: #ffc107; color: black; }
+        #infoBox {
+            font-size: 13px; margin-top: 10px; background: #f8f9fa;
+            padding: 8px; border-radius: 6px; border-left: 4px solid #28a745;
+        }
+        .algorithm-info {
+            font-size: 11px; color: #666; margin-top: 3px;
+        }
+        .stats {
+            background: #e9ecef; padding: 6px; border-radius: 4px;
+            margin-top: 8px; font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel">
+    <b>Улаанбаатар - Зам Төлөвлөгөө</b><br>
+    <small>Алгоритм сонгоод, 2 цэг дарна уу</small>
+
+    <button class="dijkstra" onclick="runAlgo('dijkstra')">
+        Dijkstra - Хамгийн богино зам
+        <div class="algorithm-info">(Зайг харгалзсан)</div>
+    </button>
+
+    <button class="bfs" onclick="runAlgo('bfs')">
+        BFS - Хамгийн цөөн алхам
+        <div class="algorithm-info">(Алхамын тоог багасгасан)</div>
+    </button>
+
+    <button class="dfs" onclick="runAlgo('dfs')">
+        🟢 DFS - Гүн рүү чиглэсэн хайлт
+        <div class="algorithm-info">(Боломжит замууд)</div>
+    </button>
+
+    <button class="reset" onclick="resetMap()">Цэвэрлэх</button>
+
+    <div class="stats" id="stats">
+        Граф: ...<br>
+        Сүүлийн үр дүн: -
+    </div>
+
+    <div id="infoBox">
+        Эхлэл ба төгсгөл цэгийг дарж сонгоно уу.
+    </div>
+</div>
+
+<script>
+let map = L.map('map').setView([47.918, 106.917], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+}).addTo(map);
+
+let startMarker = null, endMarker = null, routeLine = null;
+let startCoords = null, endCoords = null;
+
+// Load graph info on startup
+fetch('/api/graph_info')
+    .then(r => r.json())
+    .then(data => {
+        document.getElementById('stats').innerHTML =
+            `Граф: ${data.nodes} цэг, ${data.edges} зам<br>Сүүлийн үр дүн: -`;
+    });
+
+map.on('click', (e) => {
+    if (!startMarker) {
+        startCoords = e.latlng;
+        startMarker = L.marker(e.latlng, {
+            icon: L.icon({
+                iconUrl: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
+                iconSize: [32, 32],
+                iconAnchor: [16, 32]
+            })
+        }).addTo(map).bindPopup("Эхлэл").openPopup();
+        info("🟢 Эхлэл цэг сонгогдлоо. Төгсгөлийн цэгээ сонгоно уу.");
+    } else if (!endMarker) {
+        endCoords = e.latlng;
+        endMarker = L.marker(e.latlng, {
+            icon: L.icon({
+                iconUrl: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
+                iconSize: [32, 32],
+                iconAnchor: [16, 32]
+            })
+        }).addTo(map).bindPopup("🏁 Төгсгөл").openPopup();
+        info("Төгсгөл сонгогдлоо. Алгоритм сонгоно уу!");
+    } else {
+        alert("Хоёр цэг аль хэдийн сонгогдсон! Reset хийнэ үү.");
+    }
+});
+
+async function runAlgo(algo) {
+    if (!startCoords || !endCoords) {
+        alert("Эхлэл ба төгсгөлийн цэгийг сонгоно уу!");
+        return;
+    }
+
+    info("Зам тооцож байна...");
+
+    try {
+        const res = await fetch("/api/path", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                start_lat: startCoords.lat,
+                start_lon: startCoords.lng,
+                end_lat: endCoords.lat,
+                end_lon: endCoords.lng,
+                algorithm: algo
+            })
+        });
+
+        const data = await res.json();
+
+        if (!data.success) {
+            alert("Алдаа: " + data.error);
+            info( data.error);
+            return;
+        }
+
+        // Remove old route
+        if (routeLine) map.removeLayer(routeLine);
+
+        // Draw new route
+        const color = algo === "dijkstra" ? "red" : algo === "bfs" ? "blue" : "green";
+        routeLine = L.polyline(data.path, {
+            color: color,
+            weight: 6,
+            opacity: 0.8,
+            lineJoin: 'round'
+        }).addTo(map);
+
+        // Fit map to route bounds
+        map.fitBounds(routeLine.getBounds());
+
+        // Update info
+        const algoNames = {
+            'dijkstra': 'Dijkstra',
+            'bfs': 'BFS',
+            'dfs': 'DFS'
+        };
+
+        info(`${algoNames[algo]} зам олдлоо<br>
+              Зай: ${data.distance.toFixed(1)} м<br>
+              Хугацаа: ${data.time} сек<br>
+              Цэг: ${data.nodes_visited} ширхэг`);
+
+        document.getElementById('stats').innerHTML =
+            `Граф: ...<br>Сүүлийн үр дүн: ${algoNames[algo]} - ${data.distance.toFixed(0)}м`;
+
+    } catch (error) {
+        console.error("Error:", error);
+        alert("Серверт холбогдоход алдаа гарлаа");
+        info(" Холболтын алдаа");
+    }
+}
+
+function resetMap() {
+    if (startMarker) map.removeLayer(startMarker);
+    if (endMarker) map.removeLayer(endMarker);
+    if (routeLine) map.removeLayer(routeLine);
+
+    startMarker = endMarker = routeLine = null;
+    startCoords = endCoords = null;
+
+    info(" Эхлэл ба төгсгөл цэгийг дахин сонгоно уу.");
+}
+
+function info(text) {
+    document.getElementById("infoBox").innerHTML = text;
+}
+</script>
+</body>
+</html>

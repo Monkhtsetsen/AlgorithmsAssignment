@@ -1,0 +1,32 @@
+flask-web server uusgeh
+cors-font end ees huselt ilgeehiig zuvshuurdug
+geopandas shapely-gazriin zurgiin GIS fileuud geometr ugugdul unshdag
+math, heapq, time, deque-algorithmd hereglegdeh tootsoolol, ugugdliin butets
+graph buteej zamiin ugugdliig unshij node bolon edge uusgene
+class GraphBuilder:
+    def __init__(self):
+        self.nodes = {} node_id (latitude, longitude) urgurug, urtraga
+        self.adjacency = {} node_id (neighbour_id, distance)
+        self.node_count = 0
+
+  haversine - gazriin hoyr tsegiin hoorondoh zaig metreer tootsno
+  zamiin coordinataas node hoorondiin weight tootsoh
+  add_node() ba add_edge()
+  shine zangilaa bolon holbolt uusgene
+  load_osm_data()
+  .shp file aas ugugdliig unshij graph bolgono
+  fclass baganad undeslen zuvhun mashin yavah bolomjtoi zamiig songono
+  coordinatiig node bolgon huvirgah
+  haversine ashiglan zaig tootsood adjacency list d hadgalna
+  find-nearest node()
+  ugugdsun coordinatad hamgiin oir node iig olno
+  isconnected()
+  hoyr node hoorond holbolt baigaa esehiig shalgana DFS ashiglan
+  SearchAlgorithms class
+  zam haih algorithmuudiig heregjuuldeg
+  Dijkstra's algorithm
+  hamgiin bogino zam oloh algorithm priority queue heapq ashiglan baga zamiig urgelj oldog
+  butsaadag zuils path distance t node_visited
+  BFS breadth first search urgunuur haih algorithm hamgiin oiriin zamiig hurdan oldog
+  gehdee jintei algorithm deer tudiilen bish
+  DFS depth first search zarimdaa zamiig turshij uzdeg tul udaan ajillaj magadgucodend DFS recursive timeout

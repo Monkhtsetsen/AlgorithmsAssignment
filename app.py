@@ -1,463 +1,540 @@
-from flask import Flask, request, jsonify
+from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
-import json
 import geopandas as gpd
-import math
-from collections import deque, defaultdict
-import heapq
-import time
-from typing import List, Tuple, Dict, Set, Optional
+from shapely.geometry import LineString
+import math, heapq, time
+from collections import deque
 
 app = Flask(__name__)
 CORS(app)
 
-# Графын обьектууд
-graph_builder = None
-search_algorithms = None
-
-
 class GraphBuilder:
     def __init__(self):
         self.nodes = {}  # node_id -> (lat, lon)
-        self.edges = {}  # (node1, node2) -> weight
-        self.adjacency_list = {}  # node_id -> [(neighbor, weight)]
+        self.adjacency = {}  # node_id -> [(neighbor, weight)]
+        self.node_count = 0
 
-    def haversine_distance(self, lat1, lon1, lat2, lon2):
-        """Хоёр цэгийн хоорондох зайг тооцоолох"""
-        R = 6371000  # Дэлхийн радиус метрээр
+    def haversine(self, lat1, lon1, lat2, lon2):
+        R = 6371000
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-        lat1_rad = math.radians(lat1)
-        lat2_rad = math.radians(lat2)
-        delta_lat = math.radians(lat2 - lat1)
-        delta_lon = math.radians(lon2 - lon1)
+    def add_node(self, lat, lon):
+        self.node_count += 1
+        self.nodes[self.node_count] = (lat, lon)
+        return self.node_count
 
-        a = (math.sin(delta_lat / 2) * math.sin(delta_lat / 2) +
-             math.cos(lat1_rad) * math.cos(lat2_rad) *
-             math.sin(delta_lon / 2) * math.sin(delta_lon / 2))
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    def add_edge(self, n1, n2, weight):
+        self.adjacency.setdefault(n1, []).append((n2, weight))
 
-        return R * c
+    def load_osm_data(self, shapefile_path):
+        print("Loading OSM shapefile:", shapefile_path)
+        gdf = gpd.read_file(shapefile_path)
+        print("Shapefile columns:", list(gdf.columns))
 
-    def load_osm_data(self, shapefile_path: str):
-        """OSM өгөгдлийг ачааллах"""
-        try:
-            print("OSM өгөгдөл ачаалж байна...")
-            gdf = gpd.read_file(shapefile_path)
-            print(f"Амжилттай уншлаа: {len(gdf)} замын сегмент")
+        # Бүх төрлийн замыг оруулах
+        road_filters = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+                        'residential', 'unclassified', 'service', 'living_street']
 
-            node_id = 0
-            road_segments = []
+        if 'fclass' in gdf.columns:
+            filters = gdf['fclass'].isin(road_filters)
+            drivable = gdf[filters].reset_index(drop=True)
+        else:
+            # fclass байхгүй бол бүх замыг авах
+            drivable = gdf
+            print("!!!'fclass' column not found, using all roads")
 
-            for idx, road in gdf.iterrows():
-                if hasattr(road.geometry, 'geom_type') and road.geometry.geom_type == 'LineString':
-                    coords = list(road.geometry.coords)
+        coord_to_node = {}
 
-                    # Замын цэгүүдийг нэмэх
-                    for i, (lon, lat) in enumerate(coords):
-                        self.nodes[node_id] = (lat, lon)
+        def get_node(lat, lon):
+            key = (round(lat, 6), round(lon, 6))
+            if key not in coord_to_node:
+                node_id = self.add_node(lat, lon)
+                coord_to_node[key] = node_id
+            return coord_to_node[key]
 
-                        if i > 0:
-                            # Замын сегмент үүсгэх
-                            prev_lat, prev_lon = self.nodes[node_id - 1]
-                            distance = self.haversine_distance(prev_lat, prev_lon, lat, lon)
-
-                            # Замын жинг тодорхойлох
-                            weight = distance
-
-                            # Нэг чигийн зам эсэхийг шалгах
-                            if hasattr(road, 'oneway') and road.oneway == 'yes':
-                                self.add_edge(node_id - 1, node_id, weight)
-                            else:
-                                self.add_edge(node_id - 1, node_id, weight)
-                                self.add_edge(node_id, node_id - 1, weight)
-
-                        node_id += 1
-
-            print(f"Амжилттай ачааллаа: {len(self.nodes)} цэг, {len(self.edges)} ирмэг")
-
-        except Exception as e:
-            print(f"OSM файл уншихад алдаа гарлаа: {e}")
-            print("Туршилтын өгөгдөл үүсгэж байна...")
-            self._create_test_data()
-
-    def _create_test_data(self):
-        """Туршилтын өгөгдөл үүсгэх"""
-        # Улаанбаатарын координатууд
-        test_nodes = {
-            0: (47.918, 106.917),  # Сүхбаатар талбай
-            1: (47.920, 106.920),
-            2: (47.925, 106.925),
-            3: (47.915, 106.930),
-            4: (47.910, 106.920),
-            5: (47.905, 106.915),
-            6: (47.900, 106.910),
-            7: (47.895, 106.905),
-        }
-
-        test_edges = [
-            (0, 1, 500), (1, 2, 800), (2, 3, 600),
-            (0, 4, 700), (4, 5, 400), (5, 3, 300),
-            (1, 4, 300), (2, 5, 500), (5, 6, 350),
-            (6, 7, 450), (3, 7, 550)
-        ]
-
-        self.nodes = test_nodes
-        for node1, node2, weight in test_edges:
-            self.add_edge(node1, node2, weight)
-            self.add_edge(node2, node1, weight)  # Хоёр чигийн зам
-
-        print(f"Туршилтын өгөгдөл үүсгэв: {len(self.nodes)} цэг, {len(self.edges)} ирмэг")
-
-    def add_edge(self, node1: int, node2: int, weight: float):
-        """Ирмэг нэмэх"""
-        self.edges[(node1, node2)] = weight
-
-        if node1 not in self.adjacency_list:
-            self.adjacency_list[node1] = []
-        self.adjacency_list[node1].append((node2, weight))
-
-    def find_nearest_node(self, lat: float, lon: float) -> int:
-        """Өгөгдсөн координаттай хамгийн ойрхон цэгийг олох"""
-        min_distance = float('inf')
-        nearest_node = None
-
-        for node_id, (node_lat, node_lon) in self.nodes.items():
-            distance = self.haversine_distance(lat, lon, node_lat, node_lon)
-            if distance < min_distance:
-                min_distance = distance
-                nearest_node = node_id
-
-        return nearest_node
-
-
-class SearchAlgorithms:
-    def __init__(self, graph_builder):
-        self.graph = graph_builder
-
-    def bfs_shortest_path(self, start: int, end: int) -> Tuple[List[int], float, Dict]:
-        """BFS - Хамгийн цөөн алхам"""
-        start_time = time.time()
-
-        if start not in self.graph.adjacency_list or end not in self.graph.adjacency_list:
-            return [], float('inf'), {'time': 0, 'memory': 0}
-
-        visited = set()
-        queue = deque([(start, [start])])
-        visited.add(start)
-
-        while queue:
-            current, path = queue.popleft()
-
-            if current == end:
-                end_time = time.time()
-                distance = sum(self.graph.edges.get((path[i], path[i + 1]), 0)
-                               for i in range(len(path) - 1))
-                return path, distance, {
-                    'time': end_time - start_time,
-                    'memory': len(visited) * 8,  # Ойролцоогоор санах ой
-                    'nodes_visited': len(visited)
-                }
-
-            for neighbor, weight in self.graph.adjacency_list.get(current, []):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, path + [neighbor]))
-
-        return [], float('inf'), {
-            'time': time.time() - start_time,
-            'memory': len(visited) * 8,
-            'nodes_visited': len(visited)
-        }
-
-    def dfs_all_paths(self, start: int, end: int, max_paths: int = 10) -> Tuple[List[List[int]], Dict]:
-        """DFS - Боломжит бүх зам"""
-        start_time = time.time()
-        paths = []
-        visited_global = set()
-        memory_usage = 0
-        nodes_visited = 0
-
-        def dfs(current, path, current_visited):
-            nonlocal memory_usage, nodes_visited
-            nodes_visited += 1
-
-            if len(paths) >= max_paths:
-                return
-
-            if current == end:
-                paths.append(path.copy())
-                memory_usage = max(memory_usage, len(current_visited) * 8)
-                return
-
-            current_visited.add(current)
-            visited_global.add(current)
-
-            for neighbor, weight in self.graph.adjacency_list.get(current, []):
-                if neighbor not in current_visited:
-                    dfs(neighbor, path + [neighbor], current_visited.copy())
-
-        dfs(start, [start], set())
-
-        return paths, {
-            'time': time.time() - start_time,
-            'memory': memory_usage,
-            'nodes_visited': nodes_visited
-        }
-
-    def dijkstra_shortest_path(self, start: int, end: int) -> Tuple[List[int], float, Dict]:
-        """Dijkstra - Хамгийн богино зам"""
-        start_time = time.time()
-
-        if start not in self.graph.adjacency_list or end not in self.graph.adjacency_list:
-            return [], float('inf'), {'time': 0, 'memory': 0}
-
-        distances = {node: float('inf') for node in self.graph.nodes}
-        predecessors = {node: None for node in self.graph.nodes}
-        distances[start] = 0
-
-        priority_queue = [(0, start)]
-        visited = set()
-        nodes_visited = 0
-
-        while priority_queue:
-            current_distance, current_node = heapq.heappop(priority_queue)
-            nodes_visited += 1
-
-            if current_node in visited:
+        roads_processed = 0
+        for _, road in drivable.iterrows():
+            if road.geometry.geom_type != 'LineString':
                 continue
 
-            visited.add(current_node)
+            coords = list(road.geometry.coords)
+            oneway = str(road.get('oneway', 'no')).lower() == 'yes'
 
-            if current_node == end:
-                break
+            for i in range(len(coords) - 1):
+                lon1, lat1 = coords[i]
+                lon2, lat2 = coords[i + 1]
 
-            for neighbor, weight in self.graph.adjacency_list.get(current_node, []):
-                if neighbor in visited:
+                # Координатын хүрээг шалгах
+                if not (-90 <= lat1 <= 90 and -180 <= lon1 <= 180):
+                    continue
+                if not (-90 <= lat2 <= 90 and -180 <= lon2 <= 180):
                     continue
 
-                new_distance = current_distance + weight
-                if new_distance < distances[neighbor]:
-                    distances[neighbor] = new_distance
-                    predecessors[neighbor] = current_node
-                    heapq.heappush(priority_queue, (new_distance, neighbor))
+                n1 = get_node(lat1, lon1)
+                n2 = get_node(lat2, lon2)
+                d = self.haversine(lat1, lon1, lat2, lon2)
 
-        # Замыг бүтээх
-        path = []
-        current = end
-        while current is not None:
-            path.append(current)
-            current = predecessors[current]
+                if d > 10000:  # Хэтэрхий хол зайг шүүх
+                    continue
 
+                self.add_edge(n1, n2, d)
+                if not oneway:
+                    self.add_edge(n2, n1, d)
+
+            roads_processed += 1
+
+        print(
+            f"Graph built: {len(self.nodes)} nodes, {sum(len(v) for v in self.adjacency.values())} edges from {roads_processed} roads.")
+
+    def find_nearest_node(self, lat, lon):
+        nearest, min_d = None, float('inf')
+        for nid, (nlat, nlon) in self.nodes.items():
+            d = self.haversine(lat, lon, nlat, nlon)
+            if d < min_d:
+                nearest, min_d = nid, d
+        return nearest
+
+    def is_connected(self, start, end):
+        """Хоёр цэг холбогдсон эсэхийг шалгах"""
+        visited = set()
+        stack = [start]
+
+        while stack:
+            node = stack.pop()
+            if node == end:
+                return True
+            if node not in visited:
+                visited.add(node)
+                for neighbor, _ in self.adjacency.get(node, []):
+                    if neighbor not in visited:
+                        stack.append(neighbor)
+        return False
+
+class SearchAlgorithms:
+    def __init__(self, graph):
+        self.graph = graph
+
+    def dijkstra(self, start, end):
+        t0 = time.time()
+        dist = {n: float("inf") for n in self.graph.nodes}
+        prev = {n: None for n in self.graph.nodes}
+        dist[start] = 0
+        pq = [(0, start)]
+
+        nodes_visited = 0
+        while pq:
+            d, u = heapq.heappop(pq)
+            nodes_visited += 1
+
+            if u == end:
+                break
+
+            for v, w in self.graph.adjacency.get(u, []):
+                nd = d + w
+                if nd < dist[v]:
+                    dist[v] = nd
+                    prev[v] = u
+                    heapq.heappush(pq, (nd, v))
+
+        path, node = [], end
+        while node is not None:
+            path.append(node)
+            node = prev[node]
         path.reverse()
 
         if not path or path[0] != start:
-            return [], float('inf'), {
-                'time': time.time() - start_time,
-                'memory': len(visited) * 8,
-                'nodes_visited': nodes_visited
-            }
+            return [], float('inf'), round(time.time() - t0, 3), nodes_visited
 
-        return path, distances[end], {
-            'time': time.time() - start_time,
-            'memory': len(visited) * 8,
-            'nodes_visited': nodes_visited
+        return path, dist[end], round(time.time() - t0, 3), nodes_visited
+
+    def bfs(self, start, end):
+        t0 = time.time()
+        if start not in self.graph.adjacency or end not in self.graph.adjacency:
+            return [], float('inf'), round(time.time() - t0, 3), 0
+
+        visited = set([start])
+        queue = deque([(start, [start])])
+        nodes_visited = 1
+
+        while queue:
+            node, path = queue.popleft()
+            if node == end:
+                distance = self.path_length(path)
+                return path, distance, round(time.time() - t0, 3), nodes_visited
+            for neigh, w in self.graph.adjacency.get(node, []):
+                if neigh not in visited:
+                    visited.add(neigh)
+                    nodes_visited += 1
+                    queue.append((neigh, path + [neigh]))
+
+        return [], float('inf'), round(time.time() - t0, 3), nodes_visited
+
+    def dfs(self, start, end, max_depth=5000):
+        """DFS with very high depth limit"""
+        t0 = time.time()
+
+        # Эхлээд холбогдсон эсэхийг шалгах
+        if not self.graph.is_connected(start, end):
+            return [], float('inf'), round(time.time() - t0, 3), 0
+
+        best_path = None
+        best_distance = float('inf')
+        nodes_visited = 0
+
+        def dfs_recursive(current, path, visited, depth):
+            nonlocal best_path, best_distance, nodes_visited
+
+            nodes_visited += 1
+
+            # Хэт гүн үед зогсоох (маш өндөр хязгаар)
+            if depth > max_depth:
+                return
+
+            if current == end:
+                current_distance = self.path_length(path)
+                if current_distance < best_distance:
+                    best_path = path.copy()
+                    best_distance = current_distance
+                return
+
+            visited.add(current)
+
+            # Хөршүүдийг эрэмбэлэх (зайгаар)
+            neighbors = self.graph.adjacency.get(current, [])
+            # Богино зайтай хөршүүдээс эхлэх
+            neighbors.sort(key=lambda x: x[1])
+
+            for neighbor, weight in neighbors:
+                if neighbor not in visited:
+                    dfs_recursive(neighbor, path + [neighbor], visited.copy(), depth + 1)
+
+        dfs_recursive(start, [start], set(), 0)
+
+        if best_path:
+            return best_path, best_distance, round(time.time() - t0, 3), nodes_visited
+
+        return [], float('inf'), round(time.time() - t0, 3), nodes_visited
+
+    def iterative_deepening_dfs(self, start, end, max_depth=200):
+        """Iterative Deepening DFS with higher limits"""
+        t0 = time.time()
+
+        # Алхам алхмаар гүний хязгаарыг нэмэгдүүлэх
+        for depth in range(1, max_depth + 1, 10):  # 10 алхам тутамд нэмэгдүүлэх
+            visited = set()
+            stack = [(start, [start], 0)]  # (node, path, current_depth)
+            best_path = None
+            best_distance = float('inf')
+            nodes_visited = 0
+
+            while stack:
+                node, path, current_depth = stack.pop()
+                nodes_visited += 1
+
+                if node == end:
+                    current_distance = self.path_length(path)
+                    if current_distance < best_distance:
+                        best_path = path
+                        best_distance = current_distance
+                    continue
+
+                if current_depth >= depth:
+                    continue
+
+                if node not in visited:
+                    visited.add(node)
+                    # Хөршүүдийг нэмэх (зайгаар эрэмбэлсэн)
+                    neighbors = self.graph.adjacency.get(node, [])
+                    neighbors.sort(key=lambda x: x[1])  # Богино зайгаар эрэмбэлэх
+
+                    for neighbor, weight in neighbors:
+                        if neighbor not in visited:
+                            stack.append((neighbor, path + [neighbor], current_depth + 1))
+
+            if best_path:
+                print(f"IDDFS found path at depth {depth}")
+                return best_path, best_distance, round(time.time() - t0, 3), nodes_visited
+
+        return [], float('inf'), round(time.time() - t0, 3), nodes_visited
+
+    def dfs_optimized(self, start, end, max_depth=10000, timeout=30):
+        """DFS with timeout and very high depth limit"""
+        t0 = time.time()
+
+        if not self.graph.is_connected(start, end):
+            return [], float('inf'), round(time.time() - t0, 3), 0
+
+        best_path = None
+        best_distance = float('inf')
+        nodes_visited = 0
+
+        def dfs_recursive(current, path, visited, depth):
+            nonlocal best_path, best_distance, nodes_visited
+
+            # Timeout шалгах
+            if time.time() - t0 > timeout:
+                return True  # timeout occurred
+
+            nodes_visited += 1
+
+            # Гүний хязгаар
+            if depth > max_depth:
+                return False
+
+            if current == end:
+                current_distance = self.path_length(path)
+                if current_distance < best_distance:
+                    best_path = path.copy()
+                    best_distance = current_distance
+                return False
+
+            visited.add(current)
+
+            # Хөршүүдийг эрэмбэлэх
+            neighbors = self.graph.adjacency.get(current, [])
+            # Ойрхон хөршүүдээс эхлэх
+            neighbors.sort(key=lambda x: x[1])
+
+            for neighbor, weight in neighbors:
+                if neighbor not in visited:
+                    timeout_occurred = dfs_recursive(neighbor, path + [neighbor], visited.copy(), depth + 1)
+                    if timeout_occurred:
+                        return True
+
+            return False
+
+        timeout_occurred = dfs_recursive(start, [start], set(), 0)
+
+        if timeout_occurred:
+            print("!!! DFS timeout reached")
+
+        if best_path:
+            return best_path, best_distance, round(time.time() - t0, 3), nodes_visited
+
+        return [], float('inf'), round(time.time() - t0, 3), nodes_visited
+
+    def dfs_non_recursive(self, start, end, max_depth=10000):
+        """Non-recursive DFS with very high depth limit"""
+        t0 = time.time()
+
+        best_path = None
+        best_distance = float('inf')
+        nodes_visited = 0
+
+        stack = [(start, [start], 0)]  # (node, path, depth)
+        visited_global = set()
+
+        while stack:
+            node, path, depth = stack.pop()
+            nodes_visited += 1
+
+            if node == end:
+                current_distance = self.path_length(path)
+                if current_distance < best_distance:
+                    best_path = path
+                    best_distance = current_distance
+                continue
+
+            if depth > max_depth:
+                continue
+
+            if node not in visited_global:
+                visited_global.add(node)
+
+                # Хөршүүдийг нэмэх
+                neighbors = self.graph.adjacency.get(node, [])
+                # Алслагдсан хөршүүдийг сүүлийн ээлжинд нэмэх
+                neighbors.sort(key=lambda x: x[1], reverse=True)
+
+                for neighbor, weight in neighbors:
+                    if neighbor not in visited_global:
+                        stack.append((neighbor, path + [neighbor], depth + 1))
+
+        if best_path:
+            return best_path, best_distance, round(time.time() - t0, 3), nodes_visited
+
+        return [], float('inf'), round(time.time() - t0, 3), nodes_visited
+
+    def path_length(self, path):
+        total = 0
+        for i in range(len(path) - 1):
+            for neigh, w in self.graph.adjacency.get(path[i], []):
+                if neigh == path[i + 1]:
+                    total += w
+                    break
+        return total
+# === 3. BUILD GRAPH ===
+graph = GraphBuilder()
+try:
+    graph.load_osm_data("gis_osm_roads_free_1.shp")
+    print("OSM data loaded successfully")
+except Exception as e:
+    print(f"Error loading OSM data: {e}")
+    print("Creating comprehensive test data...")
+
+    # Дэлгэрэнгүй туршилтын өгөгдөл үүсгэх
+    graph = GraphBuilder()
+
+    # Улаанбаатарын гол байршилууд
+    test_locations = [
+        (47.9185, 106.9172, "Сүхбаатар талбай"),
+        (47.9204, 106.9178, "Улаанбаатар банк"),
+        (47.9178, 106.9056, "ХУД"),
+        (47.9089, 106.9125, "Найрамдал цэнгэлдэх"),
+        (47.9123, 106.9241, "Хан-Уул"),
+        (47.8996, 106.9187, "Баянгол"),
+        (47.9256, 106.9321, "Сонгинохайрхан"),
+        (47.8932, 106.8923, "Толгойт"),
+        (47.9315, 106.9087, "Бага тойруу"),
+        (47.9021, 106.8764, "Их тойруу")
+    ]
+
+    # Цэгүүдийг нэмэх
+    node_ids = {}
+    for i, (lat, lon, name) in enumerate(test_locations):
+        node_id = graph.add_node(lat, lon)
+        node_ids[name] = node_id
+        print(f" {name}: node {node_id}")
+
+    # Замын холболтууд
+    test_connections = [
+        ("Сүхбаатар талбай", "Улаанбаатар банк", 150),
+        ("Сүхбаатар талбай", "ХУД", 800),
+        ("Сүхбаатар талбай", "Хан-Уул", 1200),
+        ("Улаанбаатар банк", "ХУД", 700),
+        ("Улаанбаатар банк", "Бага тойруу", 2500),
+        ("ХУД", "Найрамдал цэнгэлдэх", 600),
+        ("ХУД", "Баянгол", 1800),
+        ("Найрамдал цэнгэлдэх", "Хан-Уул", 900),
+        ("Найрамдал цэнгэлдэх", "Баянгол", 1100),
+        ("Хан-Уул", "Сонгинохайрхан", 1400),
+        ("Хан-Уул", "Бага тойруу", 2100),
+        ("Баянгол", "Толгойт", 800),
+        ("Баянгол", "Их тойруу", 1500),
+        ("Сонгинохайрхан", "Бага тойруу", 1200),
+        ("Толгойт", "Их тойруу", 700),
+        ("Бага тойруу", "Их тойруу", 3500)
+    ]
+
+    for loc1, loc2, dist in test_connections:
+        if loc1 in node_ids and loc2 in node_ids:
+            graph.add_edge(node_ids[loc1], node_ids[loc2], dist)
+            graph.add_edge(node_ids[loc2], node_ids[loc1], dist)
+            print(f" {loc1} ↔ {loc2}: {dist}m")
+
+search = SearchAlgorithms(graph)
+
+
+# === 4. FLASK ROUTES ===
+@app.route("/")
+def home():
+    return render_template("map.html")
+
+
+@app.route("/api/path", methods=["POST"])
+def get_path():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "No JSON data received"})
+
+        start_node = graph.find_nearest_node(data["start_lat"], data["start_lon"])
+        end_node = graph.find_nearest_node(data["end_lat"], data["end_lon"])
+        algo = data["algorithm"]
+
+        print(f"🔍 Path request: {algo} from {start_node} to {end_node}")
+
+        # Safety check for isolated nodes
+        if not graph.adjacency.get(start_node):
+            return jsonify({"success": False, "error": f"Start node {start_node} has no neighbors"})
+        if not graph.adjacency.get(end_node):
+            return jsonify({"success": False, "error": f"End node {end_node} has no neighbors"})
+
+        # Холбогдсон эсэхийг шалгах
+        if not graph.is_connected(start_node, end_node):
+            return jsonify({"success": False, "error": "Start and end nodes are not connected"})
+
+        if algo == "dijkstra":
+            path, dist, t, nodes_visited = search.dijkstra(start_node, end_node)
+        elif algo == "bfs":
+            path, dist, t, nodes_visited = search.bfs(start_node, end_node)
+        elif algo == "dfs":
+            # DFS-ийн 2 хувилбарыг турших
+            path, dist, t, nodes_visited = search.iterative_deepening_dfs(start_node, end_node)
+            if not path:
+                path, dist, t, nodes_visited = search.dfs(start_node, end_node)
+        else:
+            return jsonify({"success": False, "error": "Invalid algorithm"})
+
+        if not path or dist == float("inf"):
+            return jsonify({"success": False, "error": "No path found between selected points"})
+
+        coords = [[graph.nodes[n][0], graph.nodes[n][1]] for n in path]
+
+        print(f"Path found: {len(path)} nodes, {dist:.1f}m, {t}s, visited {nodes_visited} nodes")
+
+        return jsonify({
+            "success": True,
+            "path": coords,
+            "distance": round(dist, 1),
+            "time": t,
+            "nodes_visited": nodes_visited,
+            "path_nodes": len(path)
+        })
+
+    except Exception as e:
+        print(f"!!! Error in path calculation: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Server error: {str(e)}"
+        }), 500
+
+
+@app.route("/api/graph_info", methods=["GET"])
+def graph_info():
+    """Return graph information"""
+    total_edges = sum(len(v) for v in graph.adjacency.values())
+    return jsonify({
+        "nodes": len(graph.nodes),
+        "edges": total_edges,
+        "density": f"{(total_edges / len(graph.nodes)):.2f}" if graph.nodes else "0",
+        "bounds": {
+            "min_lat": min(lat for lat, lon in graph.nodes.values()) if graph.nodes else 47.8,
+            "max_lat": max(lat for lat, lon in graph.nodes.values()) if graph.nodes else 48.0,
+            "min_lon": min(lon for lat, lon in graph.nodes.values()) if graph.nodes else 106.8,
+            "max_lon": max(lon for lat, lon in graph.nodes.values()) if graph.nodes else 107.0
         }
-
-
-@app.route('/api/path/shortest', methods=['POST'])
-def shortest_path():
-    """Хамгийн богино зам"""
-    try:
-        data = request.json
-        start_lat = data['start_lat']
-        start_lon = data['start_lon']
-        end_lat = data['end_lat']
-        end_lon = data['end_lon']
-
-        start_node = graph_builder.find_nearest_node(start_lat, start_lon)
-        end_node = graph_builder.find_nearest_node(end_lat, end_lon)
-
-        path, distance, metrics = search_algorithms.dijkstra_shortest_path(start_node, end_node)
-
-        coordinates = [graph_builder.nodes[node_id] for node_id in path]
-
-        return jsonify({
-            'success': True,
-            'path': coordinates,
-            'distance': distance,
-            'metrics': metrics,
-            'algorithm': 'Dijkstra',
-            'start_node': start_node,
-            'end_node': end_node
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 400
-
-
-@app.route('/api/path/all', methods=['POST'])
-def all_paths():
-    """Бүх боломжит зам"""
-    try:
-        data = request.json
-        start_lat = data['start_lat']
-        start_lon = data['start_lon']
-        end_lat = data['end_lat']
-        end_lon = data['end_lon']
-        max_paths = data.get('max_paths', 5)
-
-        start_node = graph_builder.find_nearest_node(start_lat, start_lon)
-        end_node = graph_builder.find_nearest_node(end_lat, end_lon)
-
-        paths, metrics = search_algorithms.dfs_all_paths(start_node, end_node, max_paths)
-
-        all_coordinates = []
-        for path in paths:
-            coordinates = [graph_builder.nodes[node_id] for node_id in path]
-            distance = sum(graph_builder.edges.get((path[i], path[i + 1]), 0)
-                           for i in range(len(path) - 1))
-            all_coordinates.append({
-                'path': coordinates,
-                'distance': distance,
-                'steps': len(path) - 1
-            })
-
-        return jsonify({
-            'success': True,
-            'paths': all_coordinates,
-            'metrics': metrics,
-            'algorithm': 'DFS',
-            'start_node': start_node,
-            'end_node': end_node
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 400
-
-
-@app.route('/api/path/steps', methods=['POST'])
-def minimal_steps():
-    """Хамгийн цөөн алхам"""
-    try:
-        data = request.json
-        start_lat = data['start_lat']
-        start_lon = data['start_lon']
-        end_lat = data['end_lat']
-        end_lon = data['end_lon']
-
-        start_node = graph_builder.find_nearest_node(start_lat, start_lon)
-        end_node = graph_builder.find_nearest_node(end_lat, end_lon)
-
-        path, distance, metrics = search_algorithms.bfs_shortest_path(start_node, end_node)
-
-        coordinates = [graph_builder.nodes[node_id] for node_id in path]
-
-        return jsonify({
-            'success': True,
-            'path': coordinates,
-            'distance': distance,
-            'steps': len(path) - 1,
-            'metrics': metrics,
-            'algorithm': 'BFS',
-            'start_node': start_node,
-            'end_node': end_node
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 400
-
-
-@app.route('/api/nodes', methods=['GET'])
-def get_nodes():
-    """Бүх цэгүүдийг авах"""
-    return jsonify({
-        'success': True,
-        'nodes': graph_builder.nodes,
-        'total_nodes': len(graph_builder.nodes)
     })
 
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
+@app.route("/api/debug_connection", methods=["POST"])
+def debug_connection():
+    """Хоёр цэгийн холболтыг шалгах"""
+    data = request.get_json()
+    start_node = graph.find_nearest_node(data["start_lat"], data["start_lon"])
+    end_node = graph.find_nearest_node(data["end_lat"], data["end_lon"])
+
     return jsonify({
-        'status': 'healthy',
-        'nodes': len(graph_builder.nodes),
-        'edges': len(graph_builder.edges)
+        "start_node": start_node,
+        "end_node": end_node,
+        "start_has_neighbors": bool(graph.adjacency.get(start_node)),
+        "end_has_neighbors": bool(graph.adjacency.get(end_node)),
+        "connected": graph.is_connected(start_node, end_node),
+        "start_neighbors": len(graph.adjacency.get(start_node, [])),
+        "end_neighbors": len(graph.adjacency.get(end_node, []))
     })
 
 
-@app.route('/api/test', methods=['GET'])
-def test_route():
-    """Туршилтын зам тооцоолол"""
-    try:
-        # Туршилтын цэгүүд
-        start_node = 0
-        end_node = 3
-
-        # Бүх алгоритмаар тооцоолол хийх
-        dijkstra_path, dijkstra_distance, dijkstra_metrics = search_algorithms.dijkstra_shortest_path(start_node,
-                                                                                                      end_node)
-        bfs_path, bfs_distance, bfs_metrics = search_algorithms.bfs_shortest_path(start_node, end_node)
-        dfs_paths, dfs_metrics = search_algorithms.dfs_all_paths(start_node, end_node, 3)
-
-        dfs_info = []
-        for path in dfs_paths:
-            distance = sum(graph_builder.edges.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
-            dfs_info.append({
-                'path': [graph_builder.nodes[node_id] for node_id in path],
-                'distance': distance,
-                'steps': len(path) - 1
-            })
-
-        return jsonify({
-            'success': True,
-            'dijkstra': {
-                'path': [graph_builder.nodes[node_id] for node_id in dijkstra_path],
-                'distance': dijkstra_distance,
-                'metrics': dijkstra_metrics
-            },
-            'bfs': {
-                'path': [graph_builder.nodes[node_id] for node_id in bfs_path],
-                'distance': bfs_distance,
-                'metrics': bfs_metrics
-            },
-            'dfs': {
-                'paths': dfs_info,
-                'metrics': dfs_metrics
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 400
-
-
-def initialize_api(shapefile_path: str = None):
-    """API-г эхлүүлэх"""
-    global graph_builder, search_algorithms
-
-    graph_builder = GraphBuilder()
-
-    if shapefile_path:
-        graph_builder.load_osm_data(shapefile_path)
-    else:
-        graph_builder._create_test_data()
-
-    search_algorithms = SearchAlgorithms(graph_builder)
-
-    print("REST API бэлэн боллоо!")
-    print(f"Нийт {len(graph_builder.nodes)} цэг, {len(graph_builder.edges)} ирмэг")
-    return app
-
-
-if __name__ == '__main__':
-    # OSM файл байхгүй бол туршилтын өгөгдөл үүсгэнэ
-    app = initialize_api('gis_osm_roads_free_1.shp')
+if __name__ == "__main__":
+    print("Starting Flask server...")
+    print("📊 Graph Statistics:")
+    print(f"   - Nodes: {len(graph.nodes)}")
+    print(f"   - Edges: {sum(len(v) for v in graph.adjacency.values())}")
+    print(f"   - Node 1 neighbors: {len(graph.adjacency.get(1, []))}")
+    print(f"   - Node 2 neighbors: {len(graph.adjacency.get(2, []))}")
+    print("Server running on http://localhost:5000")
     app.run(debug=True, port=5000, host='0.0.0.0')
