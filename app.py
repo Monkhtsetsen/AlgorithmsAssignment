@@ -3,25 +3,26 @@ from flask_cors import CORS
 import geopandas as gpd
 from shapely.geometry import LineString
 import math, heapq, time
-from collections import deque
+from collections import deque#bfs double ended queue
 
 app = Flask(__name__)
 CORS(app)
 
 class GraphBuilder:
     def __init__(self):
-        self.nodes = {}  # node_id -> (lat, lon)
-        self.adjacency = {}  # node_id -> [(neighbor, weight)]
+        self.nodes = {}
+        self.adjacency = {} #neg node oos nogoo node ruu holbogdson zam
         self.node_count = 0
-
+#hoyr tsegiin hoorondoh zaig metreer oldog
     def haversine(self, lat1, lon1, lat2, lon2):
-        R = 6371000
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        R = 6371000 #delhiin radius
+        phi1, phi2 = math.radians(lat1), math.radians(lat2) #urgurguudiig radiand huvirgaj bna
+        #delhiin gadarguu deerh hoyr tsegiin murui zaig tootsoh tomyo
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
         a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
         return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
+#neg id uusgeed coordinatiig hadgalna
     def add_node(self, lat, lon):
         self.node_count += 1
         self.nodes[self.node_count] = (lat, lon)
@@ -38,7 +39,7 @@ class GraphBuilder:
         # Бүх төрлийн замыг оруулах
         road_filters = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
                         'residential', 'unclassified', 'service', 'living_street']
-
+#fcall buyu zamiin turul baihgui esehiig shalgaj bna
         if 'fclass' in gdf.columns:
             filters = gdf['fclass'].isin(road_filters)
             drivable = gdf[filters].reset_index(drop=True)
@@ -48,7 +49,7 @@ class GraphBuilder:
             print("!!!'fclass' column not found, using all roads")
 
         coord_to_node = {}
-
+#davhardsan coordinatad shine node uusgehgui baih
         def get_node(lat, lon):
             key = (round(lat, 6), round(lon, 6))
             if key not in coord_to_node:
@@ -68,7 +69,6 @@ class GraphBuilder:
                 lon1, lat1 = coords[i]
                 lon2, lat2 = coords[i + 1]
 
-                # Координатын хүрээг шалгах
                 if not (-90 <= lat1 <= 90 and -180 <= lon1 <= 180):
                     continue
                 if not (-90 <= lat2 <= 90 and -180 <= lon2 <= 180):
@@ -78,7 +78,7 @@ class GraphBuilder:
                 n2 = get_node(lat2, lon2)
                 d = self.haversine(lat1, lon1, lat2, lon2)
 
-                if d > 10000:  # Хэтэрхий хол зайг шүүх
+                if d > 10000:
                     continue
 
                 self.add_edge(n1, n2, d)
@@ -99,7 +99,6 @@ class GraphBuilder:
         return nearest
 
     def is_connected(self, start, end):
-        """Хоёр цэг холбогдсон эсэхийг шалгах"""
         visited = set()
         stack = [start]
 
@@ -119,20 +118,20 @@ class SearchAlgorithms:
         self.graph = graph
 
     def dijkstra(self, start, end):
-        t0 = time.time()
-        dist = {n: float("inf") for n in self.graph.nodes}
-        prev = {n: None for n in self.graph.nodes}
-        dist[start] = 0
-        pq = [(0, start)]
+        t0 = time.time()#ehleh tsagiig hemjine her udaan ajillahiig tootsno
+        dist = {n: float("inf") for n in self.graph.nodes}#buh zaig hyazgaargui gej ehluuleh
+        prev = {n: None for n in self.graph.nodes}#umnuh oroig hadgalna
+        dist[start] = 0#ehleh oroin zai 0
+        pq = [(0, start)]#hamgiin baga zaitai oroig turuulj shalgah buh oroig daraalald oruulah
 
         nodes_visited = 0
         while pq:
-            d, u = heapq.heappop(pq)
+            d, u = heapq.heappop(pq)#queue ees hamgiin bogino zaitai oroig avna
             nodes_visited += 1
 
             if u == end:
                 break
-
+#u oroin hursh buriig shalgana v->hursh oroi w->zai nd->shine tootsoolson niit zai
             for v, w in self.graph.adjacency.get(u, []):
                 nd = d + w
                 if nd < dist[v]:
@@ -164,7 +163,7 @@ class SearchAlgorithms:
             node, path = queue.popleft()
             if node == end:
                 distance = self.path_length(path)
-                return path, distance, round(time.time() - t0, 3), nodes_visited
+                return path, distance, round(time.time() - t0, 3), nodes_visited #anhnii oldson zam ni hamgiin bogino
             for neigh, w in self.graph.adjacency.get(node, []):
                 if neigh not in visited:
                     visited.add(neigh)
@@ -174,7 +173,6 @@ class SearchAlgorithms:
         return [], float('inf'), round(time.time() - t0, 3), nodes_visited
 
     def dfs(self, start, end, max_depth=5000):
-        """DFS with very high depth limit"""
         t0 = time.time()
 
         # Эхлээд холбогдсон эсэхийг шалгах
@@ -190,7 +188,6 @@ class SearchAlgorithms:
 
             nodes_visited += 1
 
-            # Хэт гүн үед зогсоох (маш өндөр хязгаар)
             if depth > max_depth:
                 return
 
@@ -220,7 +217,6 @@ class SearchAlgorithms:
         return [], float('inf'), round(time.time() - t0, 3), nodes_visited
 
     def iterative_deepening_dfs(self, start, end, max_depth=200):
-        """Iterative Deepening DFS with higher limits"""
         t0 = time.time()
 
         # Алхам алхмаар гүний хязгаарыг нэмэгдүүлэх
@@ -262,7 +258,6 @@ class SearchAlgorithms:
         return [], float('inf'), round(time.time() - t0, 3), nodes_visited
 
     def dfs_optimized(self, start, end, max_depth=10000, timeout=30):
-        """DFS with timeout and very high depth limit"""
         t0 = time.time()
 
         if not self.graph.is_connected(start, end):
@@ -318,7 +313,6 @@ class SearchAlgorithms:
         return [], float('inf'), round(time.time() - t0, 3), nodes_visited
 
     def dfs_non_recursive(self, start, end, max_depth=10000):
-        """Non-recursive DFS with very high depth limit"""
         t0 = time.time()
 
         best_path = None
@@ -367,7 +361,7 @@ class SearchAlgorithms:
                     total += w
                     break
         return total
-# === 3. BUILD GRAPH ===
+
 graph = GraphBuilder()
 try:
     graph.load_osm_data("gis_osm_roads_free_1.shp")
@@ -446,7 +440,7 @@ def get_path():
         end_node = graph.find_nearest_node(data["end_lat"], data["end_lon"])
         algo = data["algorithm"]
 
-        print(f"🔍 Path request: {algo} from {start_node} to {end_node}")
+        print(f"Path request: {algo} from {start_node} to {end_node}")
 
         # Safety check for isolated nodes
         if not graph.adjacency.get(start_node):
@@ -531,7 +525,7 @@ def debug_connection():
 
 if __name__ == "__main__":
     print("Starting Flask server...")
-    print("📊 Graph Statistics:")
+    print("Graph Statistics:")
     print(f"   - Nodes: {len(graph.nodes)}")
     print(f"   - Edges: {sum(len(v) for v in graph.adjacency.values())}")
     print(f"   - Node 1 neighbors: {len(graph.adjacency.get(1, []))}")
